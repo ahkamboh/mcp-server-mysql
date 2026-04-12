@@ -494,6 +494,14 @@ if (isMainModule()) {
           }
         });
 
+        app.get("/health", (_req: Request, res: Response) => {
+          res.status(200).json({ status: "ok" });
+        });
+
+        app.get("/", (_req: Request, res: Response) => {
+          res.status(200).json({ status: "ok", service: "mcp-server-mysql" });
+        });
+
         // SSE notifications not supported in stateless mode
         app.get("/mcp", async (req: Request, res: Response) => {
           console.log("Received GET MCP request");

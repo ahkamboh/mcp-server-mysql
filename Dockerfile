@@ -40,16 +40,18 @@ ENV MYSQL_PORT=3306
 ENV MYSQL_USER=root
 ENV MYSQL_PASS=
 ENV MYSQL_DB=db_name
-ENV ALLOW_INSERT_OPERATION=true
-ENV ALLOW_UPDATE_OPERATION=true
+ENV MYSQL_SSL=false
+ENV ALLOW_INSERT_OPERATION=false
+ENV ALLOW_UPDATE_OPERATION=false
 ENV ALLOW_DELETE_OPERATION=false
+ENV IS_REMOTE_MCP=true
+ENV REMOTE_SECRET_KEY=
+ENV PORT=8080
 
 # Install production dependencies only
-# Add --no-optional flag to skip lifecycle scripts like prepare
 RUN pnpm install --prod --frozen-lockfile --ignore-scripts
 
-# # Expose any ports if necessary (e.g., 8080)
-# EXPOSE 8080
+EXPOSE 8080
 
 # Run the server
 ENTRYPOINT ["node", "dist/index.js"]
