@@ -39,6 +39,7 @@ import {
 import express, { Request, Response } from "express";
 import { fileURLToPath } from 'url';
 import { realpathSync } from 'fs';
+import * as path from 'path';
 
 
 log("info", `Starting MySQL MCP server v${version}...`);
@@ -495,6 +496,13 @@ if (isMainModule()) {
 
         app.get("/health", (_req: Request, res: Response) => {
           res.status(200).json({ status: "ok" });
+        });
+
+        app.get("/favicon.ico", (_req: Request, res: Response) => {
+          const dir = path.dirname(fileURLToPath(import.meta.url));
+          res.sendFile(path.join(dir, "..", "public", "favicon.ico"), (err) => {
+            if (err) res.status(404).end();
+          });
         });
 
         app.get("/", (_req: Request, res: Response) => {

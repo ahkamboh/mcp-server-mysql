@@ -31,6 +31,7 @@ WORKDIR /app
 
 # Copy the built files from the builder
 COPY --from=builder /app/dist /app/dist
+COPY --from=builder /app/public /app/public
 COPY --from=builder /app/package.json /app/
 COPY --from=builder /app/pnpm-lock.yaml* /app/
 
