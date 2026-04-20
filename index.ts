@@ -498,6 +498,53 @@ if (isMainModule()) {
           res.status(200).json({ status: "ok" });
         });
 
+        // ChatGPT Custom GPT Actions (REST) endpoint — read-only SQL.
+        // Bearer auth is mandatory here (separate from optional /mcp auth).
+        const GPT_API_KEY = process.env.GPT_API_KEY || "";
+        const READ_ONLY_RE = /^\s*(select|show|describe|desc|explain)\b/i;
+        app.post("/query", async (req: Request, res: Response) => {
+          if (!GPT_API_KEY) {
+            res.status(503).json({ error: "GPT_API_KEY not configured on server" });
+            return;
+          }
+          const auth = req.get("Authorization") || "";
+          if (!auth.startsWith("Bearer ") || auth.slice(7) !== GPT_API_KEY) {
+            res.status(401).json({ error: "Missing or invalid bearer token" });
+            return;
+          }
+          const sqlRaw = (req.body && typeof req.body.sql === "string") ? req.body.sql : "";
+          const params = Array.isArray(req.body?.params) ? req.body.params : [];
+          const sql = sqlRaw.trim().replace(/;\s*$/, "");
+          if (!sql) {
+            res.status(400).json({ error: "Missing 'sql' string in body" });
+            return;
+          }
+          if (!READ_ONLY_RE.test(sql)) {
+            res.status(400).json({ error: "Only SELECT/SHOW/DESCRIBE/EXPLAIN statements are allowed" });
+            return;
+          }
+          if (sql.includes(";")) {
+            res.status(400).json({ error: "Multi-statement queries are not allowed" });
+            return;
+          }
+          const t0 = Date.now();
+          try {
+            const rows = await executeQuery<unknown[]>(sql, params);
+            const rowsArr = Array.isArray(rows) ? rows : [];
+            res.status(200).json({
+              rows: rowsArr,
+              row_count: rowsArr.length,
+              elapsed_ms: Date.now() - t0,
+            });
+          } catch (err) {
+            res.status(500).json({
+              error: "Query failed",
+              detail: err instanceof Error ? err.message : String(err),
+              elapsed_ms: Date.now() - t0,
+            });
+          }
+        });
+
         app.get("/favicon.ico", (_req: Request, res: Response) => {
           const dir = path.dirname(fileURLToPath(import.meta.url));
           res.sendFile(path.join(dir, "..", "public", "favicon.ico"), (err) => {
