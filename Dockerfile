@@ -46,8 +46,9 @@ ENV ALLOW_INSERT_OPERATION=false
 ENV ALLOW_UPDATE_OPERATION=false
 ENV ALLOW_DELETE_OPERATION=false
 ENV IS_REMOTE_MCP=true
-ENV REMOTE_SECRET_KEY=
 ENV PORT=8080
+ENV TOTP_SECRET=
+ENV AUTH_TOKEN_SECRET=
 
 # Install production dependencies only
 RUN pnpm install --prod --frozen-lockfile --ignore-scripts

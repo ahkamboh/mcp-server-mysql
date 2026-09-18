@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SQL MCP sign in</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #101114;
+        --card: #1a1c21;
+        --text: #f3f4f6;
+        --muted: #9aa0aa;
+        --line: #2a2d34;
+        --accent: #6ea8ff;
+        --err: #f0a0a0;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font: 16px/1.45 system-ui, -apple-system, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+      form {
+        width: min(420px, 100%);
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 28px 24px 24px;
+      }
+      h1 {
+        margin: 0 0 6px;
+        font-size: 1.25rem;
+        font-weight: 650;
+      }
+      p {
+        margin: 0 0 20px;
+        color: var(--muted);
+      }
+      label {
+        display: block;
+        margin: 0 0 6px;
+        font-size: 0.9rem;
+      }
+      select, input[type="text"] {
+        width: 100%;
+        margin: 0 0 16px;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #101114;
+        color: var(--text);
+        font: inherit;
+      }
+      input[type="text"] {
+        letter-spacing: 0.35em;
+        font-variant-numeric: tabular-nums;
+      }
+      button {
+        width: 100%;
+        padding: 11px 14px;
+        border: 0;
+        border-radius: 8px;
+        background: var(--accent);
+        color: #0b1220;
+        font: inherit;
+        font-weight: 650;
+        cursor: pointer;
+      }
+      .err {
+        display: none;
+        margin: 0 0 16px;
+        color: var(--err);
+      }
+      .err.show { display: block; }
+    </style>
+  </head>
+  <body>
+    <form method="post" action="" autocomplete="off">
+      <h1>SQL MCP</h1>
+      <p>Pick a platform and enter the 6-digit code from Google Authenticator for sqlmcp:ahkamboh.</p>
+      <p class="err" id="err"></p>
+      <label for="platform">Platform</label>
+      <select id="platform" name="platform" required>
+        <option value="global4ex">Global4EX</option>
+        <option value="fundedocean">FundedOcean</option>
+      </select>
+      <label for="code">Authenticator code</label>
+      <input
+        id="code"
+        name="code"
+        type="text"
+        inputmode="numeric"
+        pattern="[0-9]{6}"
+        maxlength="6"
+        minlength="6"
+        placeholder="000000"
+        required
+        autocomplete="one-time-code"
+      />
+      <input type="hidden" name="client_id" />
+      <input type="hidden" name="redirect_uri" />
+      <input type="hidden" name="state" />
+      <input type="hidden" name="response_type" />
+      <input type="hidden" name="code_challenge" />
+      <input type="hidden" name="code_challenge_method" />
+      <input type="hidden" name="scope" />
+      <input type="hidden" name="resource" />
+      <button type="submit">Continue</button>
+    </form>
+    <script>
+      const q = new URLSearchParams(location.search);
+      const hidden = [
+        "client_id",
+        "redirect_uri",
+        "state",
+        "response_type",
+        "code_challenge",
+        "code_challenge_method",
+        "scope",
+        "resource",
+      ];
+      for (const name of hidden) {
+        const el = document.querySelector('input[name="' + name + '"]');
+        if (el) el.value = q.get(name) || "";
+      }
+      const platform = document.getElementById("platform");
+      if (q.get("platform") === "fundedocean" || q.get("platform") === "global4ex") {
+        platform.value = q.get("platform");
+      }
+      const err = document.getElementById("err");
+      const messages = {
+        invalid: "That code was wrong. Try the current 6 digits.",
+        locked: "Too many failed attempts. Wait 10 minutes and try again.",
+        platform: "Choose Global4EX or FundedOcean.",
+        oauth: "This sign-in request is missing a valid redirect. Add the MCP from your host and try again.",
+      };
+      const key = q.get("error");
+      if (key && messages[key]) {
+        err.textContent = messages[key];
+        err.classList.add("show");
+      }
+    </script>
+  </body>
+</html>

@@ -11,7 +11,12 @@ import { extractSchemaFromQuery, getQueryTypes } from "./utils.js";
 
 import * as mysql2 from "mysql2/promise";
 import { log } from "./../utils/index.js";
-import { mcpConfig as config, MYSQL_DISABLE_READ_ONLY_TRANSACTIONS } from "./../config/index.js";
+import {
+  Brand,
+  DEFAULT_BRAND,
+  MYSQL_DISABLE_READ_ONLY_TRANSACTIONS,
+  mysqlConfigFor,
+} from "./../config/index.js";
 
 // Force read-only mode in multi-DB mode unless explicitly configured otherwise
 if (isMultiDbMode && process.env.MULTI_DB_WRITE_MODE !== "true") {
@@ -30,29 +35,53 @@ function safeExit(code: number): void {
   }
 }
 
-// @INFO: Lazy load MySQL pool
-let poolPromise: Promise<mysql2.Pool>;
+// @INFO: Lazy load one read-only pool per brand
+const pools = new Map<Brand, Promise<mysql2.Pool>>();
 
-const getPool = (): Promise<mysql2.Pool> => {
-  if (!poolPromise) {
-    poolPromise = new Promise<mysql2.Pool>((resolve, reject) => {
-      try {
-        const pool = mysql2.createPool(config.mysql);
-        log("info", "MySQL pool created successfully");
-        resolve(pool);
-      } catch (error) {
-        log("error", "Error creating MySQL pool:", error);
-        reject(error);
-      }
-    });
+const getPool = (brand: Brand = DEFAULT_BRAND): Promise<mysql2.Pool> => {
+  const existing = pools.get(brand);
+  if (existing) {
+    return existing;
   }
-  return poolPromise;
+  const created = new Promise<mysql2.Pool>((resolve, reject) => {
+    try {
+      if (brand === "fundedocean" && !process.env.MYSQL_HOST_FUNDEDOCEAN) {
+        throw new Error("MYSQL_HOST_FUNDEDOCEAN is not set");
+      }
+      const pool = mysql2.createPool(mysqlConfigFor(brand));
+      log("info", `MySQL pool created for ${brand}`);
+      resolve(pool);
+    } catch (error) {
+      pools.delete(brand);
+      log("error", `Error creating MySQL pool for ${brand}:`, error);
+      reject(error);
+    }
+  });
+  pools.set(brand, created);
+  return created;
 };
 
-async function executeQuery<T>(sql: string, params: string[] = []): Promise<T> {
+async function closeAllPools(): Promise<void> {
+  const pending = [...pools.values()];
+  pools.clear();
+  for (const pendingPool of pending) {
+    try {
+      const pool = await pendingPool;
+      await pool.end();
+    } catch (err) {
+      log("error", "Error closing pool:", err);
+    }
+  }
+}
+
+async function executeQuery<T>(
+  sql: string,
+  params: string[] = [],
+  brand: Brand = DEFAULT_BRAND,
+): Promise<T> {
   let connection;
   try {
-    const pool = await getPool();
+    const pool = await getPool(brand);
     connection = await pool.getConnection();
     const result = await connection.query(sql, params);
     return (Array.isArray(result) ? result[0] : result) as T;
@@ -68,10 +97,13 @@ async function executeQuery<T>(sql: string, params: string[] = []): Promise<T> {
 }
 
 // @INFO: New function to handle write operations
-async function executeWriteQuery<T>(sql: string): Promise<T> {
+async function executeWriteQuery<T>(
+  sql: string,
+  brand: Brand = DEFAULT_BRAND,
+): Promise<T> {
   let connection;
   try {
-    const pool = await getPool();
+    const pool = await getPool(brand);
     connection = await pool.getConnection();
     log("error", "Write connection acquired");
 
@@ -173,7 +205,10 @@ async function executeWriteQuery<T>(sql: string): Promise<T> {
   }
 }
 
-async function executeReadOnlyQuery<T>(sql: string): Promise<T> {
+async function executeReadOnlyQuery<T>(
+  sql: string,
+  brand: Brand = DEFAULT_BRAND,
+): Promise<T> {
   let connection;
   try {
     // Check the type of query
@@ -267,11 +302,11 @@ async function executeReadOnlyQuery<T>(sql: string): Promise<T> {
       (isDeleteOperation && isDeleteAllowedForSchema(schema)) ||
       (isDDLOperation && isDDLAllowedForSchema(schema))
     ) {
-      return executeWriteQuery(sql);
+      return executeWriteQuery(sql, brand);
     }
 
     // For read-only operations, continue with the original logic
-    const pool = await getPool();
+    const pool = await getPool(brand);
     connection = await pool.getConnection();
     log("error", "Read-only connection acquired");
 
@@ -351,5 +386,5 @@ export {
   getPool,
   executeWriteQuery,
   executeReadOnlyQuery,
-  poolPromise,
+  closeAllPools,
 };

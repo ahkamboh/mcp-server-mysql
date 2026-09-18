@@ -91,8 +91,27 @@ export const SCHEMA_DDL_PERMISSIONS: SchemaPermissions = parseSchemaPermissions(
 
 // Remote MCP configuration
 export const IS_REMOTE_MCP = process.env.IS_REMOTE_MCP === "true";
-export const REMOTE_SECRET_KEY = process.env.REMOTE_SECRET_KEY || "";
 export const PORT = process.env.PORT || 3000;
+
+export type Brand = "global4ex" | "fundedocean";
+export const DEFAULT_BRAND: Brand = "global4ex";
+export const BRANDS: Brand[] = ["global4ex", "fundedocean"];
+export const BRAND_LABELS: Record<Brand, string> = {
+  global4ex: "Global4EX",
+  fundedocean: "FundedOcean",
+};
+
+export function isBrand(value: unknown): value is Brand {
+  return value === "global4ex" || value === "fundedocean";
+}
+
+function parseBrandEnv(): Brand {
+  const raw = (process.env.MCP_BRAND || "").trim().toLowerCase();
+  return isBrand(raw) ? raw : DEFAULT_BRAND;
+}
+
+/** Brand for stdio / process startup. Remote /mcp always uses the token claim. */
+export const STARTUP_BRAND = parseBrandEnv();
 
 // Check if we're in multi-DB mode (no specific DB set)
 const dbFromEnvOrConnString = connectionStringConfig.database || process.env.MYSQL_DB;
@@ -176,5 +195,48 @@ export const mcpConfig = {
     schema: "schema",
   },
 };
+
+function fundedOceanMysqlConfig() {
+  const host = process.env.MYSQL_HOST_FUNDEDOCEAN || "";
+  const port = Number(process.env.MYSQL_PORT_FUNDEDOCEAN || "25060");
+  const user = process.env.MYSQL_USER_FUNDEDOCEAN || "agent_readonly";
+  const password = process.env.MYSQL_PASS_FUNDEDOCEAN || "";
+  const database = process.env.MYSQL_DB_FUNDEDOCEAN || "defaultdb";
+  return {
+    host,
+    port,
+    user,
+    password,
+    database,
+    connectionLimit: 10,
+    waitForConnections: true,
+    queueLimit: process.env.MYSQL_QUEUE_LIMIT
+      ? parseInt(process.env.MYSQL_QUEUE_LIMIT, 10)
+      : 100,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 0,
+    connectTimeout: process.env.MYSQL_CONNECT_TIMEOUT
+      ? parseInt(process.env.MYSQL_CONNECT_TIMEOUT, 10)
+      : 10000,
+    authPlugins: {
+      mysql_clear_password: () => () => Buffer.from(password),
+    },
+    ...(process.env.MYSQL_SSL_FUNDEDOCEAN === "true"
+      ? {
+          ssl: {
+            rejectUnauthorized:
+              process.env.MYSQL_SSL_REJECT_UNAUTHORIZED_FUNDEDOCEAN === "true",
+          },
+        }
+      : {}),
+  };
+}
+
+export function mysqlConfigFor(brand: Brand) {
+  if (brand === "fundedocean") {
+    return fundedOceanMysqlConfig();
+  }
+  return mcpConfig.mysql;
+}
 
 export { readCACertificate, readSSLFile };

@@ -25,21 +25,32 @@ import {
   mcpConfig as config,
   MCP_VERSION as version,
   IS_REMOTE_MCP,
-  REMOTE_SECRET_KEY,
   PORT,
+  DEFAULT_BRAND,
+  STARTUP_BRAND,
+  type Brand,
 } from "./src/config/index.js";
 import {
   safeExit,
   getPool,
   executeQuery,
   executeReadOnlyQuery,
-  poolPromise,
+  closeAllPools,
 } from "./src/db/index.js";
+import {
+  faviconPath,
+  handleAuthorizePost,
+  handleRegister,
+  handleToken,
+  oauthMetadata,
+  protectedResourceMetadata,
+  requireMcpSession,
+  sendAuthorizePage,
+} from "./src/auth/http.js";
 
 import express, { Request, Response } from "express";
 import { fileURLToPath } from 'url';
 import { realpathSync } from 'fs';
-import * as path from 'path';
 
 
 log("info", `Starting MySQL MCP server v${version}...`);
@@ -113,9 +124,9 @@ log(
             connectionType: "Unix Socket",
           }
         : {
-            host: process.env.MYSQL_HOST || "127.0.0.1",
-            port: process.env.MYSQL_PORT || "3306",
-            connectionType: "TCP/IP",
+      host: process.env.MYSQL_HOST || "127.0.0.1",
+      port: process.env.MYSQL_PORT || "3306",
+      connectionType: "TCP/IP",
           }),
       user: config.mysql.user,
       password: config.mysql.password ? "******" : "not set",
@@ -125,6 +136,10 @@ log(
       sslCert: process.env.MYSQL_SSL_CERT || "not set",
       sslKey: process.env.MYSQL_SSL_KEY || "not set",
       multiDbMode: isMultiDbMode ? "enabled" : "disabled",
+      fundedoceanHost: process.env.MYSQL_HOST_FUNDEDOCEAN || "not set",
+      fundedoceanDb: process.env.MYSQL_DB_FUNDEDOCEAN || "not set",
+      fundedoceanSsl:
+        process.env.MYSQL_SSL_FUNDEDOCEAN === "true" ? "enabled" : "disabled",
     },
     null,
     2,
@@ -140,9 +155,11 @@ export const configSchema = z.object({
 export default function createMcpServer({
   sessionId,
   config,
+  brand = DEFAULT_BRAND,
 }: {
   sessionId?: string;
   config: z.infer<typeof configSchema>;
+  brand?: Brand;
 }) {
   // Create the server instance
   const server = new Server(
@@ -209,7 +226,7 @@ export default function createMcpServer({
         table_schema, table_name
     `;
 
-      const queryResult = (await executeReadOnlyQuery<any>(tablesQuery));
+      const queryResult = (await executeReadOnlyQuery<any>(tablesQuery, brand));
       const tables = JSON.parse(queryResult.content[0].text) as TableRow[];
       log("info", `Found ${tables.length} tables`);
 
@@ -267,6 +284,7 @@ export default function createMcpServer({
       const results = (await executeQuery(
         columnsQuery,
         queryParams,
+        brand,
       )) as ColumnRow[];
 
       return {
@@ -293,7 +311,7 @@ export default function createMcpServer({
       }
 
       const sql = request.params.arguments?.sql as string;
-      return await executeReadOnlyQuery(sql);
+      return await executeReadOnlyQuery(sql, brand);
     } catch (err) {
       const error = err as Error;
       log("error", "Error in CallToolRequest handler:", error);
@@ -345,34 +363,21 @@ export default function createMcpServer({
     return toolsResponse;
   });
 
-  // Initialize database connection and set up shutdown handlers
-  (async () => {
-    try {
-      log("info", "Attempting to test database connection...");
-      // Test the connection before fully starting the server
-      const pool = await getPool();
-      const connection = await pool.getConnection();
-      log("info", "Database connection test successful");
-      connection.release();
-    } catch (error) {
-      log("error", "Fatal error during server startup:", error);
-      safeExit(1);
-    }
-  })();
+  return server;
+}
 
-  // Setup shutdown handlers
+async function testDefaultPool(): Promise<void> {
+  log("info", "Attempting to test database connection...");
+  const pool = await getPool(STARTUP_BRAND);
+  const connection = await pool.getConnection();
+  log("info", `Database connection test successful (${STARTUP_BRAND})`);
+  connection.release();
+}
+
+function registerProcessHandlers(): void {
   const shutdown = async (signal: string): Promise<void> => {
     log("error", `Received ${signal}. Shutting down...`);
-    try {
-      // Only attempt to close the pool if it was created
-      if (poolPromise) {
-        const pool = await poolPromise;
-        await pool.end();
-      }
-    } catch (err) {
-      log("error", "Error closing pool:", err);
-      throw err;
-    }
+    await closeAllPools();
   };
 
   process.on("SIGINT", async () => {
@@ -395,7 +400,6 @@ export default function createMcpServer({
     }
   });
 
-  // Add unhandled error listeners
   process.on("uncaughtException", (error) => {
     log("error", "Uncaught exception:", error);
     safeExit(1);
@@ -405,8 +409,6 @@ export default function createMcpServer({
     log("error", "Unhandled rejection at:", promise, "reason:", reason);
     safeExit(1);
   });
-
-  return server;
 }
 
 /**
@@ -440,34 +442,78 @@ const isMainModule = () => {
 if (isMainModule()) {
   log("info", "Running in standalone mode");
 
-  // Start the server
   (async () => {
     try {
-      const mcpServer = createMcpServer({ config: { debug: false } });
+      registerProcessHandlers();
+      await testDefaultPool();
+
       if (IS_REMOTE_MCP) {
         const app = express();
+        app.set("trust proxy", true);
         app.use(express.json());
+        app.use(express.urlencoded({ extended: false }));
+        app.use((req: Request, res: Response, next) => {
+          const origin = req.get("Origin");
+          if (origin) {
+            res.setHeader("Access-Control-Allow-Origin", origin);
+            res.setHeader("Vary", "Origin");
+          } else {
+            res.setHeader("Access-Control-Allow-Origin", "*");
+          }
+          res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+          res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, DELETE");
+          if (req.method === "OPTIONS") {
+            res.status(204).end();
+            return;
+          }
+          next();
+        });
+
+        app.get("/health", (_req: Request, res: Response) => {
+          res.status(200).json({ status: "ok" });
+        });
+
+        app.get("/", (_req: Request, res: Response) => {
+          sendAuthorizePage(res);
+        });
+
+        app.get("/authorize", (_req: Request, res: Response) => {
+          sendAuthorizePage(res);
+        });
+
+        app.post("/authorize", (req: Request, res: Response) => {
+          handleAuthorizePost(req, res);
+        });
+
+        app.post("/token", (req: Request, res: Response) => {
+          handleToken(req, res);
+        });
+
+        app.post("/register", (req: Request, res: Response) => {
+          handleRegister(req, res);
+        });
+
+        const sendAuthMetadata = (req: Request, res: Response) => {
+          res.status(200).json(oauthMetadata(req));
+        };
+        const sendResourceMetadata = (req: Request, res: Response) => {
+          res.status(200).json(protectedResourceMetadata(req));
+        };
+        app.get("/.well-known/oauth-authorization-server", sendAuthMetadata);
+        app.get("/.well-known/openid-configuration", sendAuthMetadata);
+        app.get("/.well-known/oauth-protected-resource", sendResourceMetadata);
+        app.get("/.well-known/oauth-protected-resource/mcp", sendResourceMetadata);
+
         app.post("/mcp", async (req: Request, res: Response) => {
-          if (REMOTE_SECRET_KEY?.length) {
-            if (
-              !req.get("Authorization") ||
-              !req.get("Authorization")?.startsWith("Bearer ") ||
-              !req.get("Authorization")?.endsWith(REMOTE_SECRET_KEY)
-            ) {
-              console.error("Missing or invalid Authorization header");
-              res.status(401).json({
-                jsonrpc: "2.0",
-                error: {
-                  code: -32603,
-                  message: "Missing or invalid Authorization header",
-                },
-                id: null,
-              });
-              return;
-            }
+          const session = requireMcpSession(req, res);
+          if (!session) {
+            return;
           }
           try {
-            const server = mcpServer;
+            const server = createMcpServer({
+              config: { debug: false },
+              brand: session.platform,
+            });
             const transport: StreamableHTTPServerTransport =
               new StreamableHTTPServerTransport({
                 sessionIdGenerator: undefined,
@@ -494,71 +540,13 @@ if (isMainModule()) {
           }
         });
 
-        app.get("/health", (_req: Request, res: Response) => {
-          res.status(200).json({ status: "ok" });
-        });
-
-        // ChatGPT Custom GPT Actions (REST) endpoint — read-only SQL.
-        // Bearer auth is mandatory here (separate from optional /mcp auth).
-        const GPT_API_KEY = process.env.GPT_API_KEY || "";
-        const READ_ONLY_RE = /^\s*(select|show|describe|desc|explain)\b/i;
-        app.post("/query", async (req: Request, res: Response) => {
-          if (!GPT_API_KEY) {
-            res.status(503).json({ error: "GPT_API_KEY not configured on server" });
-            return;
-          }
-          const auth = req.get("Authorization") || "";
-          if (!auth.startsWith("Bearer ") || auth.slice(7) !== GPT_API_KEY) {
-            res.status(401).json({ error: "Missing or invalid bearer token" });
-            return;
-          }
-          const sqlRaw = (req.body && typeof req.body.sql === "string") ? req.body.sql : "";
-          const params = Array.isArray(req.body?.params) ? req.body.params : [];
-          const sql = sqlRaw.trim().replace(/;\s*$/, "");
-          if (!sql) {
-            res.status(400).json({ error: "Missing 'sql' string in body" });
-            return;
-          }
-          if (!READ_ONLY_RE.test(sql)) {
-            res.status(400).json({ error: "Only SELECT/SHOW/DESCRIBE/EXPLAIN statements are allowed" });
-            return;
-          }
-          if (sql.includes(";")) {
-            res.status(400).json({ error: "Multi-statement queries are not allowed" });
-            return;
-          }
-          const t0 = Date.now();
-          try {
-            const rows = await executeQuery<unknown[]>(sql, params);
-            const rowsArr = Array.isArray(rows) ? rows : [];
-            res.status(200).json({
-              rows: rowsArr,
-              row_count: rowsArr.length,
-              elapsed_ms: Date.now() - t0,
-            });
-          } catch (err) {
-            res.status(500).json({
-              error: "Query failed",
-              detail: err instanceof Error ? err.message : String(err),
-              elapsed_ms: Date.now() - t0,
-            });
-          }
-        });
-
         app.get("/favicon.ico", (_req: Request, res: Response) => {
-          const dir = path.dirname(fileURLToPath(import.meta.url));
-          res.sendFile(path.join(dir, "..", "public", "favicon.ico"), (err) => {
+          res.sendFile(faviconPath(), (err) => {
             if (err) res.status(404).end();
           });
         });
 
-        app.get("/", (_req: Request, res: Response) => {
-          res.status(200).json({ status: "ok", service: "mcp-server-mysql" });
-        });
-
-        // SSE notifications not supported in stateless mode
-        app.get("/mcp", async (req: Request, res: Response) => {
-          console.log("Received GET MCP request");
+        app.get("/mcp", async (_req: Request, res: Response) => {
           res.writeHead(405).end(
             JSON.stringify({
               jsonrpc: "2.0",
@@ -571,9 +559,7 @@ if (isMainModule()) {
           );
         });
 
-        // Session termination not needed in stateless mode
-        app.delete("/mcp", async (req: Request, res: Response) => {
-          console.log("Received DELETE MCP request");
+        app.delete("/mcp", async (_req: Request, res: Response) => {
           res.writeHead(405).end(
             JSON.stringify({
               jsonrpc: "2.0",
@@ -586,7 +572,6 @@ if (isMainModule()) {
           );
         });
 
-        // Start the server
         app.listen(PORT, (error) => {
           if (error) {
             console.error("Failed to start server:", error);
@@ -597,9 +582,11 @@ if (isMainModule()) {
           );
         });
       } else {
+        const mcpServer = createMcpServer({
+          config: { debug: false },
+          brand: STARTUP_BRAND,
+        });
         const transport = new StdioServerTransport();
-        // Create a server instance directly instead of importing
-
         await mcpServer.connect(transport);
         log("info", "Server started and listening on stdio");
       }
